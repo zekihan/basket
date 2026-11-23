@@ -62,17 +62,20 @@ and target price) and `price_history`. Nothing in Basket is specific to it.
 | `id` | ULID string | Server or client generated |
 | `list` | `shopping` \| `wishlist` | Default `shopping` |
 | `title` | string | 1–200 characters after trimming |
-| `quantity` | integer | 1–999, default 1 |
-| `notes` | string | 0–2000 characters; requirements, preferred brand, links |
-| `priority` | `low` \| `normal` \| `high` | Default `normal` |
-| `target_price` | integer kuruş or null | The price the owner would pay |
-| `recurring_days` | integer or null | 1–730 |
-| `status` | `open` \| `bought` \| `archived` | |
+| `quantity` | integer | 1–999, default 1; units belong in the title or notes |
+| `notes` | string | 0–2000 characters; requirements, preferred brand, units ("2 kg"), links |
+| `target_price` | integer kuruş or null | The price the owner would pay; readable by any client, such as the AI deal job |
+| `recurring_days` | integer or null | 1–730; shopping items only |
+| `status` | `open` \| `bought` \| `archived` | Stored status; see Auto-archive for the status clients see |
 | `created_at`, `updated_at` | RFC 3339 | |
 | `version` | integer | Incremented on every change |
 
-Removing an item deletes it. `archived` is for items the owner no longer wants
-but whose purchase history should stay.
+Removing an item deletes it and its purchases; undo can restore both for 30
+days, from the change log. `archived` is a separate, explicit action for items
+the owner no longer wants but whose purchase history should stay.
+
+There is no priority field and no separate links field. Links go in `notes`,
+and the PWA renders URLs in notes as links.
 
 ### Purchase
 
@@ -110,12 +113,19 @@ sets overlap by at least one token of three or more characters and either set
 contains the other, or the normalized titles are equal.
 
 `add_item` with a similar open item does not add. It returns the similar items
-and Claude asks the owner. Calling it again with `allow_similar: true` adds.
+and Claude asks the owner whether to replace the existing item, keep both or
+skip. Calling it again with `allow_similar: true` adds. Nothing is ever merged
+automatically.
 The PWA shows the same check as an inline hint without blocking.
 
 ### Buying and recurrence
 
-`mark_bought` sets `status = bought` and logs a purchase. For a recurring item,
+`mark_bought` sets `status = bought` and logs a purchase. Price and store are
+optional; a purchase without them still records the date.
+
+Only shopping items can recur. Setting `recurring_days` on a wishlist item is
+rejected, and moving a recurring item to the wishlist clears `recurring_days`.
+ For a recurring item,
 the next due date is the latest purchase date plus `recurring_days`. A bought
 recurring item is due when that date is today or earlier. Due items appear in a
 "Due again" section of the shopping tab and in `due_items`; reopening is an
@@ -123,24 +133,38 @@ explicit action (`reopen_item`, or a tap). Nothing changes on its own.
 
 Reopening a non-recurring bought item is allowed and keeps its history.
 
+### Auto-archive
+
+A bought non-recurring item whose latest purchase is more than 30 days old is
+shown as `archived` everywhere (`/api`, MCP, PWA). The status is derived when
+the list is read, so no background job runs; the stored row is rewritten to
+`archived` the next time the item is written. Recurring bought items are never
+auto-archived, because they come due again.
+
 ### Undo
+
+Undo is separate per actor: Claude's `undo` only sees MCP changes, and the
+PWA's undo only sees PWA changes. Neither can undo the other's last action.
 
 `undo` reverts the most recent MCP change if every row it touched still has the
 version that change produced. Otherwise it refuses and names the item that has
 changed since. Undo is itself logged and can be undone. The PWA has its own
-undo snackbar for its last action.
+undo snackbar for its last action, with the same version check.
 
 ## 6. Screens
 
-- **Shopping** and **Wishlist** tabs. Open items sorted by priority, then
-  newest first. Wishlist rows show the target price. A quick-add field at the
-  top; text after a comma goes to notes ("charger cable, usb-c 60W").
-- Swipe right to mark bought (optional price and store sheet afterwards, skip
-  by default). Swipe left to delete, with undo.
+- **Shopping** and **Wishlist** tabs. Open items, newest first. Wishlist rows
+  show the target price. A quick-add field at the top splits on the first
+  comma: "charger cable, usb-c 60W" becomes title *charger cable*, notes
+  *usb-c 60W*. Titles that contain a comma are entered in the item sheet.
+- Swipe right to mark bought immediately. A dismissible sheet then offers price
+  and store; ignoring it keeps the bare purchase. Swipe left to delete, with
+  undo.
 - **Due again** section at the top of Shopping when any recurring item is due.
 - **Item sheet**: all fields, move between lists, purchase history, reopen,
   archive.
-- **Bought** view: recently bought and archived items, filterable.
+- **Bought** view: bought items (non-recurring ones for 30 days, then they
+  move to archived) and an Archived filter.
 - **Settings**: sign out, export JSON, time zone.
 
 ## 7. Platform
@@ -164,7 +188,8 @@ and purchase snapshot in IndexedDB and renders from it. Mutations are queued as
 operations with a client-generated `op_id`, applied optimistically, and sent in
 order with `POST /api/ops`. The server records applied `op_id`s, so a resend is
 a no-op. Conflicts resolve per field, last write wins by server arrival; a
-delete wins over any later edit of the same item. After every send the client
+delete wins over any edit of the same item, earlier or later. There is no
+conflict UI. After every send the client
 replaces its snapshot with the server's.
 
 ### Agent access (MCP)
@@ -178,7 +203,7 @@ Tools:
 
 | Tool | Input | Effect |
 | --- | --- | --- |
-| `add_item` | `title, list?, quantity?, notes?, priority?, target_price?, recurring_days?, allow_similar?` | Adds, or returns similar open items |
+| `add_item` | `title, list?, quantity?, notes?, target_price?, recurring_days?, allow_similar?` | Adds, or returns similar open items |
 | `add_items` | `items[]` (same fields) | Adds each; reports added and similar per entry |
 | `list_items` | `list?, status? (default open), query?` | Items with due dates and last purchase |
 | `get_item` | `id` | Item with purchase history |
@@ -188,11 +213,11 @@ Tools:
 | `reopen_item` | `id` | Back to open |
 | `price_history` | `id` or `query` | Purchases, newest first |
 | `due_items` | `within_days?` (default 0) | Recurring items due by then |
-| `undo` | — | Reverts the last MCP change |
+| `undo` | — | Reverts the last MCP change (never a PWA change) |
 
-Tool descriptions tell Claude to put requirements in `notes` rather than the
-title, keep titles short and generic ("Ethernet cable"), and ask the owner when
-`add_item` reports similar items.
+Tool descriptions tell Claude to put requirements, units and links in `notes`
+rather than the title, keep titles short and generic ("Ethernet cable"), and ask
+the owner when `add_item` reports similar items.
 
 ### Backup
 
@@ -207,7 +232,9 @@ Settings.
 - `remove_item` by query with zero matches: error, no change.
 - `mark_bought` on a bought item: logs another purchase, keeps `bought`.
 - Purchase without a price: shown as "—", skipped by price history averages.
-- Changing `recurring_days` to null: the item stops being due.
+- Changing `recurring_days` to null: the item stops being due, and if bought
+  it auto-archives 30 days after its latest purchase.
+- Undo of a removal after 30 days: refused, the change log row is gone.
 - Offline delete, then an MCP edit of the same item before sync: the delete
   wins; the client shows the item as removed.
 - Time zone change: due dates use the new zone from then on.
@@ -215,6 +242,25 @@ Settings.
 ## 9. Roadmap
 
 1. Items, lists, PWA online, OIDC, MCP add/list/update/remove.
-2. Purchases, recurrence, due items, undo.
+2. Purchases, recurrence, due items, auto-archive, undo.
 3. Offline queue.
 4. Later: categories or store tags, sharing a read-only list link.
+
+## 10. Decisions
+
+| Decision | Choice |
+| --- | --- |
+| Offline | Queue changes and send them in order on reconnect |
+| Sync conflicts | Per-field last write wins; delete wins over any edit |
+| Remove | Hard delete with 30-day undo; archive is separate |
+| Similar items | Block and ask; `allow_similar: true` adds anyway |
+| Quantity | Integer; units in title or notes |
+| Priority | None |
+| Target price | Kept, structured |
+| Links | In notes, linkified in the PWA |
+| Check-off | Instant, optional price and store sheet |
+| Undo | Separate per actor |
+| Recurrence | Shopping items only; manual reopen from Due again |
+| Bought items | Non-recurring auto-archive after 30 days, derived on read |
+| Quick-add | Split on the first comma into title and notes |
+| Deals | Out of scope; the AI job only reads the list |

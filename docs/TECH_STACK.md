@@ -30,7 +30,7 @@ after each send.
 | `main.go` | Config, database, auth, services, HTTP server, backups |
 | `internal/config` | Environment configuration |
 | `internal/store` | Schema, migrations, items, purchases, change log, applied ops, sessions |
-| `internal/basket` | Service layer: validation, similar-title check, recurrence, undo |
+| `internal/basket` | Service layer: validation, similar-title check, recurrence, derived auto-archive, per-actor undo |
 | `internal/auth` | OIDC sign-in, sessions, bearer verification |
 | `internal/mcp` | MCP tools over `internal/basket` |
 | `internal/server` | Routing, `/api`, SPA serving |
@@ -63,7 +63,7 @@ after each send.
 
 | Route | Purpose |
 | --- | --- |
-| `GET /api/snapshot` | All items and purchases, plus `today` and time zone |
+| `GET /api/snapshot` | All items (with derived status) and purchases, plus `today` and time zone |
 | `POST /api/ops` | Ordered batch of `{op_id, type, …}`; returns per-op result and a new snapshot |
 | `GET /api/export` | JSON export |
 | `/auth/login`, `/auth/callback`, `/auth/logout`, `/auth/me` | Sign-in |
@@ -71,7 +71,10 @@ after each send.
 | `/healthz` | Liveness and readiness |
 
 Op types: `add_item`, `update_item`, `remove_item`, `mark_bought`,
-`reopen_item`, `delete_purchase`.
+`add_purchase_details`, `reopen_item`, `archive_item`, `delete_purchase`,
+`undo`. `add_purchase_details` fills price and store from the post-check-off
+sheet. `undo` reverts the last PWA change only. Edits carry only the changed
+fields, so the server can apply them per field.
 
 ## Deployment
 
