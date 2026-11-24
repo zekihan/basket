@@ -22,6 +22,7 @@ import (
 	"github.com/zekihan/basket/internal/backup"
 	"github.com/zekihan/basket/internal/basket"
 	"github.com/zekihan/basket/internal/config"
+	"github.com/zekihan/basket/internal/mcp"
 	"github.com/zekihan/basket/internal/server"
 	"github.com/zekihan/basket/internal/store"
 	"github.com/zekihan/basket/web"
@@ -89,10 +90,8 @@ func run() error {
 
 	go pruneLoop(ctx, svc)
 
-	var mcpHandler http.Handler // wired to mcp.NewHandler(svc) once internal/mcp lands
-
 	srv := server.New(server.Options{
-		Auth: authSvc, Service: svc, MCP: mcpHandler, Web: webFS,
+		Auth: authSvc, Service: svc, MCP: mcp.NewHandler(svc), Web: webFS,
 		Ping: func(r *http.Request) error { return st.DB().PingContext(r.Context()) },
 	})
 	registry := srv.MetricsRegistry()
