@@ -49,6 +49,8 @@ const (
 const MaxOpsPerRequest = 200
 
 // Item is the wire form of an item with derived fields.
+//
+//nolint:govet,tagliatelle // Preserve the declared wire fields.
 type Item struct {
 	ID               string  `json:"id"`
 	List             string  `json:"list"`
@@ -68,6 +70,8 @@ type Item struct {
 }
 
 // Purchase is the wire form of a purchase.
+//
+//nolint:govet,tagliatelle // Preserve the declared wire fields.
 type Purchase struct {
 	ID         string  `json:"id"`
 	ItemID     string  `json:"item_id"`
@@ -80,6 +84,8 @@ type Purchase struct {
 }
 
 // Snapshot is the full client state.
+//
+//nolint:tagliatelle // Preserve the declared wire fields.
 type Snapshot struct {
 	Today     string     `json:"today"`
 	TimeZone  string     `json:"time_zone"`
@@ -89,6 +95,8 @@ type Snapshot struct {
 }
 
 // Export is the JSON export body.
+//
+//nolint:tagliatelle // Preserve the declared wire fields.
 type Export struct {
 	ExportedAt string     `json:"exported_at"`
 	TimeZone   string     `json:"time_zone"`
@@ -98,46 +106,66 @@ type Export struct {
 
 // Optional distinguishes an absent JSON field from an explicit null.
 // Set is true when the field was present; Null is true when it was null.
+//
+//nolint:govet // Preserve the declared wire fields.
 type Optional[T any] struct {
 	Set   bool
 	Null  bool
 	Value T
 }
 
-// UnmarshalJSON records presence and null.
-func (o *Optional[T]) UnmarshalJSON(data []byte) error {
-	o.Set = true
-	if string(data) == "null" {
-		o.Null = true
+// IsZero reports whether the field is absent for JSON tags using omitzero.
+func (field Optional[T]) IsZero() bool { return !field.Set }
 
+// MarshalJSON encodes the field value or an explicit null.
+func (field Optional[T]) MarshalJSON() ([]byte, error) {
+	if !field.Set || field.Null {
+		return []byte("null"), nil
+	}
+
+	return json.Marshal(field.Value) //nolint:wrapcheck // Match the encoding/json error contract.
+}
+
+// UnmarshalJSON records presence and null.
+//
+//nolint:wrapcheck // Preserve encoding/json error types for callers.
+func (field *Optional[T]) UnmarshalJSON(data []byte) error {
+	var zero T
+
+	*field = Optional[T]{Set: true, Null: string(data) == "null", Value: zero}
+	if field.Null {
 		return nil
 	}
 
-	return json.Unmarshal(data, &o.Value)
+	return json.Unmarshal(data, &field.Value)
 }
 
 // ItemFields are the writable item fields. Absent fields are untouched.
 // For TargetPrice and RecurringDays, null clears; for Notes, null clears to "".
+//
+//nolint:govet,tagliatelle // Preserve the declared wire fields.
 type ItemFields struct {
-	List          Optional[string] `json:"list"`
-	Title         Optional[string] `json:"title"`
-	Quantity      Optional[int]    `json:"quantity"`
-	Notes         Optional[string] `json:"notes"`
-	TargetPrice   Optional[string] `json:"target_price"`
-	RecurringDays Optional[int]    `json:"recurring_days"`
+	List          Optional[string] `json:"list,omitzero"`
+	Title         Optional[string] `json:"title,omitzero"`
+	Quantity      Optional[int]    `json:"quantity,omitzero"`
+	Notes         Optional[string] `json:"notes,omitzero"`
+	TargetPrice   Optional[string] `json:"target_price,omitzero"`
+	RecurringDays Optional[int]    `json:"recurring_days,omitzero"`
 }
 
 // Op is one client operation. Only the fields of its type are read.
+//
+//nolint:govet,tagliatelle // Preserve the declared wire fields.
 type Op struct {
 	OpID       string           `json:"op_id"`
 	Type       string           `json:"type"`
 	ID         string           `json:"id,omitempty"`
-	Fields     ItemFields       `json:"fields"`
+	Fields     ItemFields       `json:"fields,omitzero"`
 	PurchaseID string           `json:"purchase_id,omitempty"`
-	Date       Optional[string] `json:"date"`
-	Price      Optional[string] `json:"price"`
-	Store      Optional[string] `json:"store"`
-	Quantity   Optional[int]    `json:"quantity"`
+	Date       Optional[string] `json:"date,omitzero"`
+	Price      Optional[string] `json:"price,omitzero"`
+	Store      Optional[string] `json:"store,omitzero"`
+	Quantity   Optional[int]    `json:"quantity,omitzero"`
 	TimeZone   string           `json:"time_zone,omitempty"`
 }
 
@@ -153,6 +181,8 @@ type OpError struct {
 }
 
 // OpResult is the outcome of one op.
+//
+//nolint:govet,tagliatelle // Preserve the declared wire fields.
 type OpResult struct {
 	OpID      string   `json:"op_id"`
 	OK        bool     `json:"ok"`
