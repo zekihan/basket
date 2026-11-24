@@ -239,15 +239,15 @@ func (current state) resultBeforeRemoval(
 	return mutationResult{item: view}, err
 }
 
-// Status changes from mark_bought are explicit. For other writes, retain an
-// existing derived archive even when an update also enables recurrence.
+// Status changes from mark_bought are explicit. A recurring bought item is
+// never archived, even when the same write enables recurrence on an item that
+// was shown as archived, because it comes due again.
 func (current state) materializeArchive(op string, change itemChange, latest string) error {
 	if op == OpUndo || op == OpMarkBought || change.After.Status != StatusBought || latest == "" {
 		return nil
 	}
 
-	recurs := change.After.RecurringDays != nil
-	if recurs && (change.Before == nil || change.Before.RecurringDays != nil) {
+	if change.After.RecurringDays != nil {
 		return nil
 	}
 

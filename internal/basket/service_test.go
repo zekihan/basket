@@ -286,6 +286,35 @@ func TestCalendarAndStoredArchival(t *testing.T) {
 	assertStatus(StatusOpen)
 }
 
+func TestRecurrenceOnDerivedArchiveComesDue(t *testing.T) {
+	t.Parallel()
+
+	fx := setup(t)
+	item := toolAdd(t, fx.svc, "Milk")
+
+	_, err := fx.svc.MarkBought(t.Context(), &MarkBoughtInput{ID: item.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	*fx.now = fx.now.AddDate(0, 0, 40)
+
+	mustApply(
+		t,
+		fx.svc,
+		opFromJSON(
+			t,
+			fmt.Sprintf(`{"type":"update_item","id":%q,"fields":{"recurring_days":7}}`, item.ID),
+		),
+	)
+
+	got := toolGet(t, fx.svc, item.ID).Item
+	if got.Status != StatusBought || !got.Due || got.DueDate == nil ||
+		*got.DueDate != "2026-12-01" {
+		t.Fatalf("item = %+v", got)
+	}
+}
+
 func TestRecurrenceAndTimeZone(t *testing.T) {
 	t.Parallel()
 
