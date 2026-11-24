@@ -100,7 +100,9 @@ export class Store {
 
   async startup(): Promise<void> {
     await this.loadFromDisk();
-    if (this.state.signedOut) return;
+    // A stored sign-out only means "not known to be signed in"; after the
+    // sign-in redirect the server decides again.
+    this.setState({ signedOut: false });
     if (!this.state.online) return;
     if (this.state.queue.length > 0) {
       void this.sendQueue();
@@ -149,6 +151,7 @@ export class Store {
     const withId: Op = { ...op, op_id: op.op_id ?? ulid() } as Op;
     const base = this.state.snapshot ?? emptySnapshot();
     const next = applyOp(base, withId);
+    if (withId.type !== "undo" && withId.type !== "set_time_zone") next.can_undo = true;
     this.seq += 1;
     this.setState({
       snapshot: next,
