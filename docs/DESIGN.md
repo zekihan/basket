@@ -116,7 +116,9 @@ contains the other, or the normalized titles are equal.
 and Claude asks the owner whether to replace the existing item, keep both or
 skip. Calling it again with `allow_similar: true` adds. Nothing is ever merged
 automatically.
-The PWA shows the same check as an inline hint without blocking.
+The PWA shows the same check as an inline hint without blocking; it asks the
+server (`GET /api/similar`), so the rule runs in one place and the hint is
+online only.
 
 ### Buying and recurrence
 
@@ -148,8 +150,9 @@ PWA's undo only sees PWA changes. Neither can undo the other's last action.
 
 `undo` reverts the most recent MCP change if every row it touched still has the
 version that change produced. Otherwise it refuses and names the item that has
-changed since. Undo is itself logged and can be undone. The PWA has its own
-undo snackbar for its last action, with the same version check.
+changed since. Undo is itself logged and can be undone: undoing twice
+re-applies the change. The PWA has its own undo snackbar for its last action,
+with the same version check.
 
 ## 6. Screens
 
@@ -165,7 +168,8 @@ undo snackbar for its last action, with the same version check.
   archive.
 - **Bought** view: bought items (non-recurring ones for 30 days, then they
   move to archived) and an Archived filter.
-- **Settings**: sign out, export JSON, time zone.
+- **Settings**: sign out, export JSON, time zone. The time zone is stored on
+  the server (`set_time_zone` op) and is not part of undo.
 
 ## 7. Platform
 
@@ -197,7 +201,8 @@ replaces its snapshot with the server's.
 Streamable HTTP at `/mcp`, enabled when `MCP_CLIENT_ID` is set. Bearer JWT
 access tokens from Authelia's `basket-mcp` client are verified for issuer,
 audience, expiry, client and owner subject. Tools go through the same service
-layer as `/api/ops`. Details in [DEPLOYMENT_MCP.md](DEPLOYMENT_MCP.md).
+layer as `/api/ops`. Details in [DEPLOYMENT_MCP.md](DEPLOYMENT_MCP.md). Tool schemas and wire
+shapes are in [API.md](API.md).
 
 Tools:
 
