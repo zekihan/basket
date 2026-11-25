@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/zekihan/go-commons/metrics"
+	"github.com/zekihan/go-commons/oidcauth"
 
-	"github.com/zekihan/basket/internal/auth"
 	"github.com/zekihan/basket/internal/basket"
 )
 
@@ -52,7 +52,7 @@ func (srv *Server) Handler() http.Handler {
 	mux.Handle(
 		"GET /auth/me",
 		srv.deps.Auth.RequireSession(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			me, ok := auth.Identity(r.Context())
+			me, ok := oidcauth.Identity[oidcauth.IdentityInfo](r.Context())
 			if !ok {
 				writeError(w, http.StatusUnauthorized, "unauthenticated", "Sign in is required.")
 

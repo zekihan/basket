@@ -41,7 +41,7 @@ type Purchase struct {
 func (tx *Tx) Items(ctx context.Context) ([]Item, error) {
 	var items []Item
 
-	err := tx.tx.SelectContext(
+	err := tx.Inner().SelectContext(
 		ctx,
 		&items,
 		"SELECT "+itemColumns+" FROM items ORDER BY created_at DESC, id DESC",
@@ -58,7 +58,7 @@ func (tx *Tx) Item(ctx context.Context, id string) (*Item, error) {
 }
 
 func (tx *Tx) SaveItem(ctx context.Context, item *Item) error {
-	_, err := tx.tx.NamedExecContext(ctx, `
+	_, err := tx.Inner().NamedExecContext(ctx, `
 		INSERT INTO items (
 			id, list, title, quantity, notes, target_price_minor, recurring_days,
 			status, created_at, updated_at, version
@@ -100,7 +100,7 @@ func (tx *Tx) SaveItemVersion(ctx context.Context, id string, version int64) err
 func (tx *Tx) Purchases(ctx context.Context) ([]Purchase, error) {
 	var rows []Purchase
 
-	err := tx.tx.SelectContext(ctx, &rows,
+	err := tx.Inner().SelectContext(ctx, &rows,
 		"SELECT "+purchaseColumns+" FROM purchases ORDER BY date DESC, created_at DESC, id DESC")
 	if err != nil {
 		return nil, fmt.Errorf("list purchases: %w", err)
@@ -112,7 +112,7 @@ func (tx *Tx) Purchases(ctx context.Context) ([]Purchase, error) {
 func (tx *Tx) ItemPurchases(ctx context.Context, id string) ([]Purchase, error) {
 	var rows []Purchase
 
-	err := tx.tx.SelectContext(
+	err := tx.Inner().SelectContext(
 		ctx,
 		&rows,
 		"SELECT "+purchaseColumns+" FROM purchases WHERE item_id = ? ORDER BY date DESC, created_at DESC, id DESC",
@@ -130,7 +130,7 @@ func (tx *Tx) Purchase(ctx context.Context, id string) (*Purchase, error) {
 }
 
 func (tx *Tx) SavePurchase(ctx context.Context, purchase *Purchase) error {
-	_, err := tx.tx.NamedExecContext(ctx, `
+	_, err := tx.Inner().NamedExecContext(ctx, `
 		INSERT INTO purchases (id, item_id, date, price_minor, quantity, store, created_at)
 		VALUES (:id, :item_id, :date, :price_minor, :quantity, :store, :created_at)
 		ON CONFLICT(id) DO UPDATE SET item_id = excluded.item_id, date = excluded.date,
@@ -151,7 +151,7 @@ func (tx *Tx) DeletePurchase(ctx context.Context, id string) error {
 func find[T any](ctx context.Context, tx *Tx, query string, args ...any) (*T, error) {
 	var row T
 
-	err := tx.tx.GetContext(ctx, &row, query, args...)
+	err := tx.Inner().GetContext(ctx, &row, query, args...)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil //nolint:nilnil // A missing row is represented by a nil pointer.
 	}
@@ -164,7 +164,7 @@ func find[T any](ctx context.Context, tx *Tx, query string, args ...any) (*T, er
 }
 
 func (tx *Tx) exec(ctx context.Context, query string, args ...any) error {
-	_, err := tx.tx.ExecContext(ctx, query, args...)
+	_, err := tx.Inner().ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("write sqlite row: %w", err)
 	}
