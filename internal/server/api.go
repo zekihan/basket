@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 
 	"github.com/zekihan/go-commons/metrics"
@@ -37,6 +38,17 @@ func (srv *Server) api(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !validMutationRequest(r) {
+		writeError(
+			w,
+			http.StatusForbidden,
+			"forbidden",
+			"JSON and the request header are required.",
+		)
+
+		return
+	}
+
 	r = metrics.WithRoute(r, r.URL.Path)
 	switch r.URL.Path {
 	case "/api/snapshot":
@@ -65,6 +77,16 @@ func (srv *Server) api(w http.ResponseWriter, r *http.Request) {
 	case "/api/ops":
 		srv.ops(w, r)
 	}
+}
+
+func validMutationRequest(r *http.Request) bool {
+	if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
+		return true
+	}
+
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+
+	return err == nil && mediaType == "application/json" && r.Header.Get("X-Basket-Request") == "1"
 }
 
 func (srv *Server) ops(w http.ResponseWriter, r *http.Request) {
