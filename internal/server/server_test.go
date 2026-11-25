@@ -14,7 +14,8 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/zekihan/basket/internal/auth"
+	"github.com/zekihan/go-commons/oidcauth"
+
 	"github.com/zekihan/basket/internal/basket"
 	"github.com/zekihan/basket/internal/store"
 )
@@ -43,15 +44,19 @@ func TestHTTP(t *testing.T) {
 
 	issuer = idp.URL
 
-	a, err := auth.New(
+	a, err := oidcauth.New(
 		t.Context(),
-		&auth.Config{
-			PublicURL:    issuer,
-			Issuer:       issuer,
-			ClientID:     "client",
-			OwnerSubject: "owner",
-			MCPClientID:  "mcp",
-			MCPAudience:  issuer + "/mcp",
+		&oidcauth.Config[oidcauth.IdentityInfo]{
+			Authorize:         oidcauth.IdentityInfoAuthorize,
+			AppName:           "Basket",
+			SessionCookie:     "basket_session",
+			TransactionCookie: "basket_oidc_tx",
+			PublicURL:         issuer,
+			Issuer:            issuer,
+			ClientID:          "client",
+			OwnerSubject:      "owner",
+			MCPClientID:       "mcp",
+			MCPAudience:       issuer + "/mcp",
 		},
 		st.DB(),
 	)

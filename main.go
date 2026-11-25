@@ -11,15 +11,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/zekihan/go-commons/backup"
 	"github.com/zekihan/go-commons/metrics"
 	"github.com/zekihan/go-commons/middleware"
+	"github.com/zekihan/go-commons/oidcauth"
 	"github.com/zekihan/go-commons/utils"
 
 	// IANA zones must resolve inside the distroless image.
 	_ "time/tzdata"
 
-	"github.com/zekihan/basket/internal/auth"
-	"github.com/zekihan/basket/internal/backup"
+	gclog "github.com/zekihan/go-commons/log"
+
 	"github.com/zekihan/basket/internal/basket"
 	"github.com/zekihan/basket/internal/config"
 	"github.com/zekihan/basket/internal/mcp"
@@ -51,9 +53,9 @@ func run() error {
 		return fmt.Errorf("start: %w", err)
 	}
 
-	loggerConfig := new(utils.LoggerConfig)
+	loggerConfig := new(gclog.LoggerConfig)
 	loggerConfig.Level = cfg.LogLevel
-	utils.InitLogger(loggerConfig)
+	gclog.InitLogger(loggerConfig)
 	utils.LogVersionInfo(ctx)
 
 	st, err := store.Open(ctx, cfg.DBPath)
@@ -62,15 +64,21 @@ func run() error {
 	}
 	defer st.Close()
 
-	authSvc, err := auth.New(ctx, &auth.Config{
-		PublicURL:      cfg.PublicURL,
-		Issuer:         cfg.OIDCIssuer,
-		ClientID:       cfg.OIDCClientID,
-		ClientSecret:   cfg.OIDCClientSecret,
-		OwnerSubject:   cfg.OwnerSubject,
-		MCPClientID:    cfg.MCPClientID,
-		MCPAudience:    cfg.MCPAudience,
-		CookieInsecure: cfg.CookieInsecure,
+	authSvc, err := oidcauth.New(ctx, &oidcauth.Config[oidcauth.IdentityInfo]{
+		Authorize:         oidcauth.IdentityInfoAuthorize,
+		HTTPClient:        nil,
+		AppName:           "Basket",
+		SessionCookie:     "basket_session",
+		TransactionCookie: "basket_oidc_tx",
+		SuccessPath:       "/",
+		PublicURL:         cfg.PublicURL,
+		Issuer:            cfg.OIDCIssuer,
+		ClientID:          cfg.OIDCClientID,
+		ClientSecret:      cfg.OIDCClientSecret,
+		OwnerSubject:      cfg.OwnerSubject,
+		MCPClientID:       cfg.MCPClientID,
+		MCPAudience:       cfg.MCPAudience,
+		CookieInsecure:    cfg.CookieInsecure,
 	}, st.DB())
 	if err != nil {
 		return fmt.Errorf("init sign-in: %w", err)
@@ -98,7 +106,10 @@ func run() error {
 
 	if cfg.BackupDir != "" {
 		go func() {
-			backupErr := backup.Run(ctx, st.DB(), cfg.BackupDir, cfg.BackupInterval, cfg.BackupKeep)
+			backupErr := backup.Run(
+				ctx, st.DB(), cfg.BackupDir, cfg.BackupInterval, cfg.BackupKeep,
+				backup.WithFilePrefix("basket-"),
+			)
 			if backupErr != nil && !errors.Is(backupErr, context.Canceled) {
 				slog.ErrorContext(ctx, "Database backups stopped", slog.Any("error", backupErr))
 			}

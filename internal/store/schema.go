@@ -1,5 +1,6 @@
-// Package store owns the SQLite schema, transactions and queries.
 package store
+
+import "github.com/zekihan/go-commons/oidcauth"
 
 // Migrations are applied in order; PRAGMA user_version records how many ran.
 var Migrations = []string{
@@ -57,28 +58,5 @@ var Migrations = []string{
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		time_zone TEXT NOT NULL
 	);
-
-	-- Server-side sessions; token_hash is the SHA-256 of the cookie value.
-	CREATE TABLE sessions (
-		token_hash TEXT PRIMARY KEY,
-		issuer TEXT NOT NULL,
-		subject TEXT NOT NULL,
-		name TEXT,
-		email TEXT,
-		created_at TEXT NOT NULL,
-		renewed_at TEXT NOT NULL,
-		expires_at TEXT NOT NULL
-	);
-	CREATE INDEX idx_sessions_expires ON sessions(expires_at);
-
-	-- One-time OIDC sign-in transactions; id_hash is the SHA-256 of the
-	-- transaction cookie value.
-	CREATE TABLE oidc_transactions (
-		id_hash TEXT PRIMARY KEY,
-		state TEXT NOT NULL,
-		nonce TEXT NOT NULL,
-		pkce_verifier TEXT NOT NULL,
-		expires_at TEXT NOT NULL
-	);
-	`,
+	` + oidcauth.Migration,
 }
