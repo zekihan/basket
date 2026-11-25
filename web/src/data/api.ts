@@ -26,7 +26,7 @@ async function handle(response: Response): Promise<Response> {
 export async function postOps(ops: Op[], signal?: AbortSignal): Promise<OpsResponse> {
   const response = await handle(await fetch("/api/ops", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "X-Basket-Request": "1" },
     body: JSON.stringify({ ops }),
     credentials: "same-origin",
     signal,

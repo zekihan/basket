@@ -1,4 +1,4 @@
-//nolint:gocyclo,lll,exhaustruct_v5,noctx,gosec,varnamelen // Integration fixture exercises the HTTP contract.
+//nolint:gocyclo,gocognit,maintidx,lll,exhaustruct_v5,noctx,gosec,varnamelen // Integration fixture exercises the HTTP contract.
 package server
 
 import (
@@ -91,6 +91,11 @@ func TestHTTP(t *testing.T) {
 		t.Helper()
 
 		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		if method == http.MethodPost {
+			r.Header.Set("Content-Type", "application/json")
+			r.Header.Set("X-Basket-Request", "1")
+		}
+
 		if session {
 			r.AddCookie(&http.Cookie{Name: "basket_session", Value: "test"})
 		}
@@ -111,6 +116,31 @@ func TestHTTP(t *testing.T) {
 	}
 
 	op := `{"ops":[{"op_id":"01ARZ3NDEKTSV4RRFFQ69G5FAV","type":"add_item","id":"01ARZ3NDEKTSV4RRFFQ69G5FAW","fields":{"title":"Milk"}}]}`
+	for _, headers := range []map[string]string{
+		{"Content-Type": "text/plain", "Origin": "https://evil.example.com", "Sec-Fetch-Site": "same-site"},
+		{"Content-Type": "application/json"},
+		{"Content-Type": "text/plain", "X-Basket-Request": "1"},
+	} {
+		r := httptest.NewRequest(http.MethodPost, "/api/ops", strings.NewReader(op))
+		r.AddCookie(&http.Cookie{Name: "basket_session", Value: "test"})
+
+		for key, value := range headers {
+			r.Header.Set(key, value)
+		}
+
+		w = httptest.NewRecorder()
+		handler.ServeHTTP(w, r)
+
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("unsafe request: %d %s", w.Code, w.Body)
+		}
+	}
+
+	w = request("GET", "/api/snapshot", "", true)
+	if !bytes.Contains(w.Body.Bytes(), []byte(`"items":[]`)) {
+		t.Fatalf("unsafe request wrote data: %s", w.Body)
+	}
+
 	for i := range 2 {
 		w = request("POST", "/api/ops", op, true)
 		if w.Code != 200 {
