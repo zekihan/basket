@@ -248,6 +248,23 @@ function cloneSnapshot(snapshot: Snapshot): Snapshot {
   };
 }
 
+function updateRecurrence(item: Item, today: string): void {
+  const { last_purchase_date: last, recurring_days: days } = item;
+  item.due_date = last && days !== null && Number.isInteger(days) && days >= 1 && days <= 730
+    ? addDays(last, days)
+    : null;
+  item.due = item.status === "bought" && item.due_date !== null && item.due_date <= today;
+}
+
+function updatePurchaseHistory(item: Item, snapshot: Snapshot): void {
+  let latest = "";
+  for (const purchase of snapshot.purchases) {
+    if (purchase.item_id === item.id && purchase.date > latest) latest = purchase.date;
+  }
+  item.last_purchase_date = latest || null;
+  updateRecurrence(item, snapshot.today);
+}
+
 export function applyOp(snapshot: Snapshot, op: Op): Snapshot {
   const next = cloneSnapshot(snapshot);
   switch (op.type) {
@@ -280,6 +297,7 @@ export function applyOp(snapshot: Snapshot, op: Op): Snapshot {
       }
       if (fields.recurring_days !== undefined) item.recurring_days = fields.recurring_days;
       if (item.list === "wishlist") item.recurring_days = null;
+      updateRecurrence(item, next.today);
       item.version += 1;
       item.updated_at = nowIso();
       return next;
@@ -308,16 +326,7 @@ export function applyOp(snapshot: Snapshot, op: Op): Snapshot {
         created_at: nowIso(),
       };
       next.purchases = [purchase, ...next.purchases];
-      const itemPurchases = next.purchases.filter(p => p.item_id === op.id);
-      const latest = itemPurchases.reduce((best, p) => (p.date > best ? p.date : best), itemPurchases[0]?.date ?? date);
-      item.last_purchase_date = latest;
-      if (item.recurring_days !== null) {
-        item.due_date = addDays(latest, item.recurring_days);
-        item.due = item.due_date <= next.today;
-      } else {
-        item.due_date = null;
-        item.due = false;
-      }
+      updatePurchaseHistory(item, next);
       return next;
     }
     case "add_purchase_details": {
@@ -334,12 +343,7 @@ export function applyOp(snapshot: Snapshot, op: Op): Snapshot {
       const item = next.items.find(it => it.id === op.id);
       if (!item) return next;
       item.status = "open";
-      item.due = false;
-      item.due_date = null;
-      if (item.recurring_days !== null && item.last_purchase_date !== null) {
-        item.due_date = addDays(item.last_purchase_date, item.recurring_days);
-        item.due = item.due_date <= next.today;
-      }
+      updateRecurrence(item, next.today);
       item.version += 1;
       item.updated_at = nowIso();
       return next;
@@ -348,12 +352,17 @@ export function applyOp(snapshot: Snapshot, op: Op): Snapshot {
       const item = next.items.find(it => it.id === op.id);
       if (!item) return next;
       item.status = "archived";
+      updateRecurrence(item, next.today);
       item.version += 1;
       item.updated_at = nowIso();
       return next;
     }
     case "delete_purchase": {
+      const purchase = next.purchases.find(p => p.id === op.purchase_id);
+      if (!purchase) return next;
       next.purchases = next.purchases.filter(p => p.id !== op.purchase_id);
+      const item = next.items.find(it => it.id === purchase.item_id);
+      if (item) updatePurchaseHistory(item, next);
       return next;
     }
     case "undo": {
@@ -367,9 +376,20 @@ export function applyOp(snapshot: Snapshot, op: Op): Snapshot {
 }
 
 function addDays(date: string, days: number): string {
-  const [y, m, d] = date.split("-").map(Number);
-  const base = Date.UTC(y, (m ?? 1) - 1, d ?? 1);
-  return new Date(base + days * 86400000).toISOString().slice(0, 10);
+  let [year, month, day] = date.split("-").map(Number);
+  day += days;
+  while (true) {
+    const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    const monthLength = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1];
+    if (!(day > monthLength)) break;
+    day -= monthLength;
+    month++;
+    if (month === 13) {
+      year++;
+      month = 1;
+    }
+  }
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
 export function batchOps(ops: Op[], max = 200): Op[][] {
