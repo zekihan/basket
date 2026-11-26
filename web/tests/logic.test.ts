@@ -16,7 +16,7 @@ import {
   splitQuickAdd,
   ulid,
 } from "../src/data/logic.ts";
-import type { Item, Snapshot } from "../src/types.ts";
+import type { Item, Op, Snapshot } from "../src/types.ts";
 
 function item(partial: Partial<Item> & { id: string }): Item {
   return {
@@ -233,6 +233,85 @@ describe("queue bookkeeping", () => {
     assert.equal(rebased.items[0].quantity, 3);
   });
 });
+
+const recurringMilk = item({
+  id: "milk",
+  title: "Milk",
+  status: "bought",
+  recurring_days: 7,
+  last_purchase_date: "2026-11-01",
+  due_date: "2026-11-08",
+  due: true,
+});
+
+for (const [mode, apply] of [
+  ["applyOp", (s: Snapshot, ops: Op[]) => ops.reduce(applyOp, s)],
+  ["rebaseSnapshot", rebaseSnapshot],
+] as const) {
+  describe(`${mode} recurrence`, () => {
+    function boughtMilk(...purchases: Array<[string, string]>): Snapshot {
+      const s = snapshot([recurringMilk]);
+      s.purchases = purchases.map(([id, date]) => ({
+        id, item_id: recurringMilk.id, date, price: null, price_minor: null,
+        quantity: 1, store: null, created_at: "2026-11-24T10:00:00Z",
+      }));
+      return s;
+    }
+
+    test("reopen and archive retain the due date and remove the item from Due again", () => {
+      const s = boughtMilk(["p1", "2026-11-01"]);
+      for (const [type, status] of [["reopen_item", "open"], ["archive_item", "archived"]] as const) {
+        const next = apply(s, [{ op_id: "01", type, id: recurringMilk.id }]);
+        assert.equal(next.items[0].status, status);
+        assert.equal(next.items[0].last_purchase_date, "2026-11-01");
+        assert.equal(next.items[0].due_date, "2026-11-08");
+        assert.deepEqual(dueAgainItems(next), []);
+      }
+    });
+
+    test("update_item recalculates or clears the due date", () => {
+      const s = boughtMilk(["p1", "2026-11-01"]);
+      const update = (fields: Extract<Op, { type: "update_item" }>["fields"]) =>
+        apply(s, [{ op_id: "01", type: "update_item", id: recurringMilk.id, fields }]);
+      const dueToday = update({ recurring_days: 23 });
+      assert.equal(dueToday.items[0].due_date, s.today);
+      assert.equal(dueAgainItems(dueToday).length, 1);
+      const dueTomorrow = update({ recurring_days: 24 });
+      assert.equal(dueTomorrow.items[0].due_date, "2026-11-25");
+      assert.deepEqual(dueAgainItems(dueTomorrow), []);
+      for (const cleared of [update({ recurring_days: null }), update({ list: "wishlist" })]) {
+        assert.equal(cleared.items[0].last_purchase_date, "2026-11-01");
+        assert.equal(cleared.items[0].due_date, null);
+        assert.deepEqual(dueAgainItems(cleared), []);
+      }
+    });
+
+    test("delete_purchase uses the latest remaining date and clears dates with no history", () => {
+      const s = boughtMilk(["p1", "2026-11-01"], ["p2", "2026-10-20"], ["p3", "2026-10-31"]);
+      const deletions: Op[] = ["p1", "p2", "p3"].map(purchase_id => ({
+        op_id: purchase_id, type: "delete_purchase", purchase_id,
+      }));
+      const fallback = apply(s, deletions.slice(0, 1));
+      assert.equal(fallback.items[0].last_purchase_date, "2026-10-31");
+      assert.equal(fallback.items[0].due_date, "2026-11-07");
+      assert.equal(dueAgainItems(fallback).length, 1);
+      const cleared = apply(s, deletions);
+      assert.equal(cleared.items[0].last_purchase_date, null);
+      assert.equal(cleared.items[0].due_date, null);
+      assert.deepEqual(dueAgainItems(cleared), []);
+    });
+
+    test("mark_bought uses the latest calendar date even when a new purchase is backdated", () => {
+      const next = apply(snapshot([item({ id: "milk", recurring_days: 7 })]), [
+        { op_id: "01", type: "mark_bought", id: "milk", purchase_id: "p1", date: "2024-02-24" },
+        { op_id: "02", type: "mark_bought", id: "milk", purchase_id: "p2", date: "2024-01-01" },
+      ]);
+      assert.equal(next.items[0].last_purchase_date, "2024-02-24");
+      assert.equal(next.items[0].due_date, "2024-03-02");
+      assert.equal(dueAgainItems(next).length, 1);
+    });
+  });
+}
 
 describe("view grouping", () => {
   const s = snapshot([
