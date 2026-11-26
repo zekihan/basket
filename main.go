@@ -65,8 +65,9 @@ func run() error {
 	defer st.Close()
 
 	authSvc, err := oidcauth.New(ctx, &oidcauth.Config[oidcauth.IdentityInfo]{
-		Authorize:         oidcauth.IdentityInfoAuthorize,
-		HTTPClient:        nil,
+		Authorize: oidcauth.IdentityInfoAuthorize,
+		//nolint:exhaustruct_v5,mnd // Set the prescribed timeout and keep the other client defaults.
+		HTTPClient:        &http.Client{Timeout: 12 * time.Second},
 		AppName:           "Basket",
 		SessionCookie:     "basket_session",
 		TransactionCookie: "basket_oidc_tx",
