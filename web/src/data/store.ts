@@ -1,7 +1,7 @@
 import { ApiError, downloadExport, getSnapshot, getSimilar, postLogout, postOps } from "./api.ts";
 import { clearLocal, openBasketDB, readLocal, writeLocal } from "./db.ts";
 import { batchOps, emptySnapshot, filterAckedOps, rebaseSnapshot, ulid } from "./logic.ts";
-import type { BasketDB, LocalChange } from "./db.ts";
+import type { BasketDB, LocalChange, LocalState } from "./db.ts";
 import type { Item, Op, Snapshot } from "../types.ts";
 
 export interface Toast {
@@ -71,7 +71,7 @@ export class Store {
     return this.dbPromise;
   }
 
-  private async updateLocal(change?: LocalChange): Promise<void> {
+  private async updateLocal(change?: LocalChange): Promise<LocalState | undefined> {
     const generation = this.generation;
     const local = await this.db()
       .then(db => change ? writeLocal(db, change, generation) : readLocal(db))
@@ -106,6 +106,7 @@ export class Store {
       ? rebaseSnapshot(local.snapshot ?? emptySnapshot(), this.volatileQueue)
       : local.snapshot;
     this.setState({ snapshot, queue: [...local.queue, ...this.volatileQueue] });
+    return local;
   }
 
   async startup(): Promise<void> {
@@ -152,10 +153,12 @@ export class Store {
 
   private async syncQueue(refresh: boolean): Promise<void> {
     if (this.state.signedOut || !this.state.online) return;
-    await this.updateLocal();
+    const local = await this.updateLocal();
     if (this.state.signedOut || !this.state.online) return;
     if (this.state.queue.length === 0 && refresh) {
-      await this.updateLocal({ snapshot: await getSnapshot() });
+      const snapshot = await getSnapshot();
+      if (this.state.signedOut) return;
+      await this.updateLocal({ snapshot, expectedOperationRevision: local?.operationRevision });
     }
     while (!this.state.signedOut && this.state.online && this.state.queue.length > 0) {
       const [batch] = batchOps(this.state.queue, BATCH);

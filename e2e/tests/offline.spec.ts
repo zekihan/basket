@@ -1,6 +1,35 @@
 import { expect, itemRow, quickAdd, snapshot, test } from "./fixtures.ts";
 import type { Op } from "../../web/src/types.ts";
 
+test("renders server changes after an offline startup with no pending edits", async ({ page, context, signIn }) => {
+  await signIn();
+  await expect.poll(() => page.evaluate(() => navigator.serviceWorker.controller !== null)).toBe(true);
+  await context.setOffline(true);
+  const reload = await page.reload();
+  expect(reload?.fromServiceWorker()).toBe(true);
+  const status = page.getByTestId("sync-status");
+  await expect(status).toHaveText("Offline");
+  await expect(page.getByTestId("tab-shopping")).toBeVisible();
+  await expect(itemRow(page, "tea")).toHaveCount(0);
+
+  const op: Op = {
+    op_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+    type: "add_item",
+    id: "01ARZ3NDEKTSV4RRFFQ69G5FAW",
+    fields: { title: "tea" },
+  };
+  const write = await page.request.post("/api/ops", {
+    headers: { "X-Basket-Request": "1" },
+    data: { ops: [op] },
+  });
+  await expect(write).toBeOK();
+  expect((await snapshot(page)).items).toMatchObject([{ title: "tea" }]);
+
+  await context.setOffline(false);
+  await expect(itemRow(page, "tea")).toBeVisible();
+  await expect(status).toHaveText("Synced");
+});
+
 test("reloads queued changes offline and applies them exactly once after reconnect", async ({ page, context, signIn }) => {
   await signIn();
   await expect.poll(() => page.evaluate(() => navigator.serviceWorker.controller !== null)).toBe(true);
