@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type React from "react";
-import { getStore, registerServiceWorker } from "../data/index.ts";
+import { getStore } from "../data/index.ts";
 import { archivedItems, boughtItems, ulid } from "../data/logic.ts";
 import { ListTab, QuickAdd } from "./Lists.tsx";
 import { ItemSheet, PurchaseSheet } from "./ItemSheet.tsx";
@@ -27,11 +27,6 @@ export default function App(): React.JSX.Element {
   const [showUndo, setShowUndo] = useState(false);
   const undoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastMutation = useRef<number | null>(null);
-
-  useEffect(() => {
-    registerServiceWorker();
-    void store.startup();
-  }, [store]);
 
   useEffect(() => {
     if (state.lastMutationAt !== null && state.lastMutationAt !== lastMutation.current) {
