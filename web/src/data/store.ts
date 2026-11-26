@@ -1,7 +1,7 @@
 import { ApiError, downloadExport, getSnapshot, getSimilar, postLogout, postOps } from "./api.ts";
 import { clearLocal, openBasketDB, readLocal, writeLocal } from "./db.ts";
-import { applyOp, batchOps, emptySnapshot, filterAckedOps, ulid } from "./logic.ts";
-import type { BasketDB } from "./db.ts";
+import { batchOps, emptySnapshot, filterAckedOps, rebaseSnapshot, ulid } from "./logic.ts";
+import type { BasketDB, LocalChange } from "./db.ts";
 import type { Item, Op, Snapshot } from "../types.ts";
 
 export interface Toast {
@@ -27,11 +27,12 @@ export class Store {
   private state: StoreState;
   private listeners = new Set<() => void>();
   private sending = false;
-  private sendRequested = false;
+  private sendRequested: boolean | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private backoffMs = 1000;
   private lastToastId = 0;
-  private seq = 0;
+  private generation: number | undefined;
+  private volatileQueue: Op[] = [];
 
   constructor() {
     this.state = {
@@ -70,64 +71,57 @@ export class Store {
     return this.dbPromise;
   }
 
-  private async persist(): Promise<void> {
-    try {
-      const db = await this.db();
-      await writeLocal(db, {
-        snapshot: this.state.snapshot,
-        queue: this.state.queue,
-        signedOut: this.state.signedOut,
-      });
-    } catch {
-      // IndexedDB unavailable; keep in-memory state.
+  private async updateLocal(change?: LocalChange): Promise<void> {
+    const generation = this.generation;
+    const local = await this.db()
+      .then(db => change ? writeLocal(db, change, generation) : readLocal(db))
+      .catch(() => null);
+    if (this.state.signedOut) return;
+    if (!local) {
+      if (!change) return;
+      // IndexedDB can be unavailable. Keep local intent in memory for this tab.
+      if ("op" in change) {
+        const op = change.op;
+        if (this.state.queue.some(queued => queued.op_id === op.op_id)) return;
+        this.volatileQueue.push(op);
+        this.setState({
+          snapshot: rebaseSnapshot(this.state.snapshot ?? emptySnapshot(), [op]),
+          queue: [...this.state.queue, op],
+        });
+      } else {
+        const queue = filterAckedOps(this.state.queue, change.acked ?? []);
+        this.setState({ snapshot: rebaseSnapshot(change.snapshot, queue), queue });
+      }
+      return;
     }
-  }
-
-  async loadFromDisk(): Promise<void> {
-    try {
-      const db = await this.db();
-      const local = await readLocal(db);
-      this.setState({
-        snapshot: local.snapshot ?? this.state.snapshot,
-        queue: local.queue,
-        signedOut: local.signedOut,
-      });
-      this.seq = local.queue.length;
-    } catch {
-      // ignore
+    if (generation !== undefined && generation !== local.generation) {
+      this.volatileQueue = [];
+      this.setState({ snapshot: null, queue: [], signedOut: true, toasts: [], retryIn: null });
+      return;
     }
+    this.generation = local.generation;
+    const queuedIds = new Set(local.queue.map(op => op.op_id));
+    this.volatileQueue = this.volatileQueue.filter(op => !queuedIds.has(op.op_id));
+    const snapshot = this.volatileQueue.length > 0
+      ? rebaseSnapshot(local.snapshot ?? emptySnapshot(), this.volatileQueue)
+      : local.snapshot;
+    this.setState({ snapshot, queue: [...local.queue, ...this.volatileQueue] });
   }
 
   async startup(): Promise<void> {
-    await this.loadFromDisk();
-    // A stored sign-out only means "not known to be signed in"; after the
-    // sign-in redirect the server decides again.
-    this.setState({ signedOut: false });
+    await this.updateLocal();
     if (!this.state.online) return;
     if (this.state.queue.length > 0) {
       void this.sendQueue();
       return;
     }
-    await this.refreshFromServer();
-  }
-
-  async refreshFromServer(): Promise<void> {
-    try {
-      const snapshot = await getSnapshot();
-      this.setState({ snapshot });
-      await this.persist();
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 401) {
-        this.setState({ signedOut: true });
-        await this.persist();
-      }
-    }
+    await this.sendQueue(true);
   }
 
   private handleOnline(): void {
     this.setState({ online: true });
     this.backoffMs = 1000;
-    void this.sendQueue();
+    void this.sendQueue(true);
   }
 
   private handleOffline(): void {
@@ -148,51 +142,62 @@ export class Store {
   }
 
   async enqueue(op: Op): Promise<void> {
+    if (this.state.signedOut) return;
     const withId: Op = { ...op, op_id: op.op_id ?? ulid() } as Op;
-    const base = this.state.snapshot ?? emptySnapshot();
-    const next = applyOp(base, withId);
-    if (withId.type !== "undo" && withId.type !== "set_time_zone") next.can_undo = true;
-    this.seq += 1;
-    this.setState({
-      snapshot: next,
-      queue: [...this.state.queue, withId],
-      lastMutationAt: Date.now(),
-    });
-    await this.persist();
+    await this.updateLocal({ op: withId });
+    if (this.state.signedOut) return;
+    this.setState({ lastMutationAt: Date.now() });
     void this.sendQueue();
   }
 
-  async sendQueue(): Promise<void> {
+  private async syncQueue(refresh: boolean): Promise<void> {
+    if (this.state.signedOut || !this.state.online) return;
+    await this.updateLocal();
+    if (this.state.signedOut || !this.state.online) return;
+    if (this.state.queue.length === 0 && refresh) {
+      await this.updateLocal({ snapshot: await getSnapshot() });
+    }
+    while (!this.state.signedOut && this.state.online && this.state.queue.length > 0) {
+      const [batch] = batchOps(this.state.queue, BATCH);
+      const response = await postOps(batch);
+      if (this.state.signedOut) return;
+      const acked = response.results.map(result => result.op_id);
+      if (filterAckedOps(batch, acked).length === batch.length) throw new Error("No operations acknowledged");
+      const hasVolatileAck = this.volatileQueue.some(op => acked.includes(op.op_id));
+      this.volatileQueue = filterAckedOps(this.volatileQueue, acked);
+      await this.updateLocal({ snapshot: response.snapshot, acked, hasVolatileAck });
+      if (this.state.signedOut) return;
+      for (const result of response.results) {
+        if (!result.ok && result.error) this.pushToast(result.error.message);
+      }
+    }
+  }
+
+  async sendQueue(refresh = false): Promise<void> {
     if (this.sending) {
-      this.sendRequested = true;
+      this.sendRequested = refresh || this.sendRequested === true;
       return;
     }
     if (this.state.signedOut || !this.state.online) return;
-    if (this.state.queue.length === 0) return;
     this.sending = true;
     this.setState({ sending: true });
     try {
-      while (this.state.queue.length > 0) {
-        const batch = batchOps(this.state.queue, BATCH)[0];
-        if (!batch || batch.length === 0) break;
-        const response = await postOps(batch);
-        const acked = response.results.map(r => r.op_id);
-        const failed = response.results.filter(r => !r.ok && r.error);
-        for (const result of failed) this.pushToast(result.error?.message ?? "Could not save change");
-        const remaining = filterAckedOps(this.state.queue, acked);
-        let rebased = response.snapshot;
-        for (const op of remaining) rebased = applyOp(rebased, op);
-        this.setState({ snapshot: rebased, queue: remaining, retryIn: null });
-        await this.persist();
-        if (!response.snapshot.can_undo && remaining.length === 0) {
-          // keep can_undo from server
-        }
+      const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
+      // Read the shared queue after acquiring the lock, so tabs send in order
+      // and a slower server response cannot overwrite a newer snapshot.
+      if (locks) {
+        await locks.request("basket-sync", () => this.syncQueue(refresh));
+      } else {
+        await this.syncQueue(refresh);
       }
       this.backoffMs = 1000;
+      if (this.retryTimer) clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+      this.setState({ retryIn: null });
     } catch (error) {
+      if (this.state.signedOut) return;
       if (error instanceof ApiError && error.status === 401) {
         this.setState({ signedOut: true, retryIn: null });
-        await this.persist();
         return;
       }
       const delay = this.backoffMs;
@@ -201,19 +206,24 @@ export class Store {
       if (this.retryTimer) clearTimeout(this.retryTimer);
       this.retryTimer = setTimeout(() => {
         this.retryTimer = null;
-        void this.sendQueue();
+        void this.sendQueue(refresh);
       }, delay);
     } finally {
       this.sending = false;
       this.setState({ sending: false });
-      if (this.sendRequested) {
-        this.sendRequested = false;
-        void this.sendQueue();
+      if (this.sendRequested !== null) {
+        const requestedRefresh = this.sendRequested;
+        this.sendRequested = null;
+        void this.sendQueue(requestedRefresh);
       }
     }
   }
 
   async signOut(): Promise<void> {
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+    this.volatileQueue = [];
+    this.setState({ signedOut: true, snapshot: null, queue: [], toasts: [], retryIn: null });
     try {
       await postLogout();
     } catch {
@@ -225,7 +235,6 @@ export class Store {
     } catch {
       // ignore
     }
-    this.setState({ signedOut: true, snapshot: null, queue: [], toasts: [] });
   }
 
   async exportJSON(): Promise<void> {
