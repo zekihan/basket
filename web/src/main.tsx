@@ -1,5 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { ensureLatestApp, getStore } from "./data/index.ts";
 import "./index.css";
 import App from "./ui/App.tsx";
 
@@ -11,3 +12,7 @@ createRoot(root).render(
     <App />
   </StrictMode>,
 );
+
+void ensureLatestApp().then(reloading => {
+  if (!reloading) return getStore().startup();
+});
