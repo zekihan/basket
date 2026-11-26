@@ -1,24 +1,39 @@
 import { openDB } from "idb";
 import type { DBSchema, IDBPDatabase } from "idb";
 import type { Op, Snapshot } from "../types.ts";
+import { emptySnapshot, rebaseSnapshot } from "./logic.ts";
 
 export interface BasketDBSchema extends DBSchema {
-  meta: { key: string; value: { signedOut?: boolean } };
+  meta: { key: string; value: { generation?: number } };
   snapshot: { key: string; value: Snapshot };
   queue: { key: string; value: { op: Op; seq: number } };
 }
 
 export type BasketDB = IDBPDatabase<BasketDBSchema>;
 
+export interface LocalState {
+  snapshot: Snapshot | null;
+  queue: Op[];
+  generation: number;
+}
+
+export type LocalChange =
+  | { op: Op }
+  | { snapshot: Snapshot; acked?: string[]; hasVolatileAck?: boolean };
+
 const NAME = "basket";
 const KEY = "state";
+const STORES = ["meta", "snapshot", "queue"] as const;
 
 export function openBasketDB(): Promise<BasketDB> {
-  return openDB<BasketDBSchema>(NAME, 1, {
-    upgrade(db) {
-      db.createObjectStore("meta");
-      db.createObjectStore("snapshot");
-      db.createObjectStore("queue", { keyPath: "op.op_id" });
+  // Version 1 tabs replace the entire queue. Close those connections on upgrade.
+  return openDB<BasketDBSchema>(NAME, 2, {
+    upgrade(db, oldVersion) {
+      if (oldVersion === 0) {
+        db.createObjectStore("meta");
+        db.createObjectStore("snapshot");
+        db.createObjectStore("queue", { keyPath: "op.op_id" });
+      }
     },
     blocking(_current, _next, event) {
       (event.target as IDBDatabase).close();
@@ -26,51 +41,67 @@ export function openBasketDB(): Promise<BasketDB> {
   });
 }
 
-export async function readLocal(db: BasketDB): Promise<{ snapshot: Snapshot | null; queue: Op[]; signedOut: boolean }> {
-  const tx = db.transaction(["meta", "snapshot", "queue"] as const, "readonly");
-  const [meta, snapshot, entries] = await Promise.all([
+export function readLocal(db: BasketDB): Promise<LocalState> {
+  return transactLocal(db);
+}
+
+export function writeLocal(db: BasketDB, change: LocalChange, expectedGeneration?: number): Promise<LocalState> {
+  return transactLocal(db, change, expectedGeneration);
+}
+
+async function transactLocal(db: BasketDB, change?: LocalChange, expectedGeneration?: number): Promise<LocalState> {
+  const write = change ? db.transaction(STORES, "readwrite") : null;
+  const tx = write ?? db.transaction(STORES, "readonly");
+  const [meta, cached, entries] = await Promise.all([
     tx.objectStore("meta").get(KEY),
     tx.objectStore("snapshot").get(KEY),
     tx.objectStore("queue").getAll(),
   ]);
-  await tx.done;
-  const sorted = [...(entries ?? [])].sort((a, b) => a.seq - b.seq);
-  return {
-    snapshot: (snapshot as Snapshot | undefined) ?? null,
-    queue: sorted.map(entry => entry.op),
-    signedOut: !!(meta as { signedOut?: boolean } | undefined)?.signedOut,
-  };
-}
+  entries.sort((a, b) => a.seq - b.seq);
+  const generation = meta?.generation ?? 0;
+  let snapshot = cached ?? null;
+  let queue = entries.map(entry => entry.op);
 
-export async function writeLocal(db: BasketDB, state: { snapshot: Snapshot | null; queue: Op[]; signedOut?: boolean }): Promise<void> {
-  const tx = db.transaction(["meta", "snapshot", "queue"] as const, "readwrite");
-  const queueStore = tx.objectStore("queue");
-  const existing = await queueStore.getAll();
-  const keep = new Set(state.queue.map(op => op.op_id));
-  const seqById = new Map(existing.map(entry => [entry.op.op_id, entry.seq]));
-  for (const entry of existing) {
-    if (!keep.has(entry.op.op_id)) await queueStore.delete(entry.op.op_id);
-  }
-  let maxSeq = Math.max(0, ...existing.map(entry => entry.seq));
-  for (const op of state.queue) {
-    const seq = seqById.get(op.op_id) ?? ++maxSeq;
-    await queueStore.put({ op, seq });
-  }
-  if (state.snapshot) {
-    await tx.objectStore("snapshot").put(state.snapshot, KEY);
-  } else {
-    await tx.objectStore("snapshot").delete(KEY);
-  }
-  if (state.signedOut !== undefined) {
-    await tx.objectStore("meta").put({ signedOut: state.signedOut }, KEY);
+  // The cached snapshot already includes the queue. Append to that projection,
+  // or replace it with a server snapshot projected through the remaining queue.
+  if (write && change && (expectedGeneration === undefined || expectedGeneration === generation)) {
+    const queueStore = write.objectStore("queue");
+    const snapshotStore = write.objectStore("snapshot");
+    if ("op" in change) {
+      const op = change.op;
+      if (!queue.some(queued => queued.op_id === op.op_id)) {
+        snapshot = rebaseSnapshot(snapshot ?? emptySnapshot(), [op]);
+        await Promise.all([
+          queueStore.add({ op, seq: (entries.at(-1)?.seq ?? 0) + 1 }),
+          snapshotStore.put(snapshot, KEY),
+        ]);
+        queue.push(op);
+      }
+    } else {
+      const acked = new Set(change.acked);
+      const acknowledged = queue.filter(op => acked.has(op.op_id));
+      // Another sender can have committed the whole batch in browsers without Web Locks.
+      if (!change.acked || acknowledged.length > 0 || change.hasVolatileAck) {
+        queue = queue.filter(op => !acked.has(op.op_id));
+        snapshot = rebaseSnapshot(change.snapshot, queue);
+        await Promise.all([
+          ...acknowledged.map(op => queueStore.delete(op.op_id)),
+          snapshotStore.put(snapshot, KEY),
+        ]);
+      }
+    }
   }
   await tx.done;
+  return { snapshot, queue, generation };
 }
 
 export async function clearLocal(db: BasketDB): Promise<void> {
-  const tx = db.transaction(["meta", "snapshot", "queue"] as const, "readwrite");
+  const tx = db.transaction(STORES, "readwrite");
+  const meta = tx.objectStore("meta");
+  const previous = await meta.get(KEY);
   await Promise.all([
-    tx.objectStore("meta").clear(),
+    // Reject writes from tabs that still hold state from before sign-out.
+    meta.put({ generation: (previous?.generation ?? 0) + 1 }, KEY),
     tx.objectStore("snapshot").clear(),
     tx.objectStore("queue").clear(),
   ]);

@@ -385,7 +385,10 @@ export function filterAckedOps(queued: Op[], ackedIds: string[]): Op[] {
 
 export function rebaseSnapshot(serverSnapshot: Snapshot, remaining: Op[]): Snapshot {
   let current = serverSnapshot;
-  for (const op of remaining) current = applyOp(current, op);
+  for (const op of remaining) {
+    current = applyOp(current, op);
+    if (op.type !== "undo" && op.type !== "set_time_zone") current.can_undo = true;
+  }
   return current;
 }
 
