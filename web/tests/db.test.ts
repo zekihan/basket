@@ -67,7 +67,7 @@ describe("basket db", () => {
     await clearLocal(db);
     await writeLocal(other, { op: { op_id: "stale", type: "undo" } }, generation);
     await writeLocal(other, { snapshot: snap(), acked: ["pending"] }, generation);
-    assert.deepEqual(await readLocal(db), { snapshot: null, queue: [], generation: generation + 1 });
+    assert.deepEqual(await readLocal(db), { snapshot: null, queue: [], generation: generation + 1, operationRevision: 0 });
     db.close();
     other.close();
   });
